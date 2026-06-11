@@ -20,7 +20,7 @@ RUN set -eux; \
         nikto sqlmap hydra exploitdb \
         testssl.sh sslscan \
         gobuster ffuf whatweb wafw00f wpscan \
-        commix john ncat hping3 \
+        commix john ncat hping3 dirb seclists \
         curl wget jq \
         python3 python3-pip \
         golang-go git unzip \
