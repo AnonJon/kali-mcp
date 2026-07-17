@@ -65,10 +65,13 @@ async def curl_request(
     elif "\n\n" in output:
         resp_headers, body = output.split("\n\n", 1)
 
+    truncated = len(body) > 2000
     return json.dumps({
         "status_code": status_code,
-        "headers": resp_headers,
-        "body": body[:10000] if len(body) > 10000 else body,
+        "headers": resp_headers[:2000],
+        "body": body[:2000],
+        "body_length": len(body),
+        "truncated": truncated,
     }, indent=2)
 
 

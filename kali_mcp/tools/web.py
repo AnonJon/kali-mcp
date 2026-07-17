@@ -13,6 +13,7 @@ async def nikto_scan(
     target: str,
     port: int = 0,
     tuning: str = "",
+    ssl: bool = False,
 ) -> str:
     """Run Nikto web server scanner.
 
@@ -20,23 +21,52 @@ async def nikto_scan(
         target: Target URL or host (e.g. "http://example.com" or "192.168.1.1")
         port: Specific port to scan (0 = auto-detect from URL)
         tuning: Nikto tuning options (e.g. "123" for interesting files, misconfigs, info disclosure)
+        ssl: Force SSL mode (auto-detected if target starts with https)
     """
+    import tempfile, os
+
     target = sanitize_input(target)
-    args = ["-h", target, "-Format", "json", "-output", "-"]
-    if port > 0:
+    has_scheme = target.startswith("http://") or target.startswith("https://")
+    use_ssl = ssl or target.startswith("https")
+
+    outfile = tempfile.mktemp(suffix=".json")
+    args = ["-h", target, "-Format", "json", "-o", outfile, "-nointeractive", "-maxtime", "240"]
+
+    if not has_scheme:
+        if port > 0:
+            args += ["-p", str(port)]
+        elif use_ssl:
+            args += ["-p", "443"]
+        if use_ssl:
+            args += ["-ssl"]
+    elif port > 0:
         args += ["-p", str(port)]
+
     if tuning:
         args += ["-Tuning", sanitize_input(tuning)]
 
     result = await run_command(build_command("nikto", args), timeout=300)
-    if result.exit_code != 0 and not result.stdout:
-        return result.to_json()
 
+    output = ""
     try:
-        data = json.loads(result.stdout)
-        return json.dumps(data, indent=2)
-    except json.JSONDecodeError:
-        return json.dumps({"raw_output": result.stdout, "exit_code": result.exit_code}, indent=2)
+        if os.path.exists(outfile):
+            with open(outfile) as f:
+                output = f.read()
+            os.unlink(outfile)
+    except OSError:
+        pass
+
+    if output:
+        try:
+            data = json.loads(output)
+            return json.dumps(data, indent=2)
+        except json.JSONDecodeError:
+            return json.dumps({"raw_output": output[:5000], "exit_code": result.exit_code}, indent=2)
+
+    if result.stdout:
+        return json.dumps({"raw_output": result.stdout[:5000], "exit_code": result.exit_code}, indent=2)
+
+    return result.to_json()
 
 
 @mcp.tool()
@@ -83,7 +113,7 @@ async def nuclei_scan(
 @mcp.tool()
 async def gobuster_scan(
     target: str,
-    wordlist: str = "/usr/share/wordlists/dirb/common.txt",
+    wordlist: str = "/usr/share/dirb/wordlists/common.txt",
     extensions: str = "",
     mode: str = "dir",
     threads: int = 10,
@@ -97,13 +127,32 @@ async def gobuster_scan(
         mode: Scan mode: dir, dns, vhost
         threads: Number of concurrent threads (default 10)
     """
+    import os
+
     target = sanitize_input(target)
     mode = sanitize_input(mode)
-    args = [mode, "-u" if mode != "dns" else "-d", target, "-w", wordlist, "-t", str(threads), "-q", "--no-color"]
+
+    wordlist_candidates = [
+        wordlist,
+        "/usr/share/dirb/wordlists/common.txt",
+        "/usr/share/wordlists/dirb/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt",
+        "/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt",
+    ]
+    resolved_wordlist = wordlist
+    for candidate in wordlist_candidates:
+        if os.path.isfile(candidate):
+            resolved_wordlist = candidate
+            break
+    else:
+        return json.dumps({"error": "No wordlist found", "searched": wordlist_candidates}, indent=2)
+
+    args = [mode, "-u" if mode != "dns" else "-d", target, "-w", resolved_wordlist, "-t", str(min(threads, 10)), "-q", "--no-color", "--timeout", "10s"]
     if extensions and mode == "dir":
         args += ["-x", sanitize_input(extensions)]
 
-    result = await run_command(build_command("gobuster", args), timeout=300)
+    result = await run_command(build_command("gobuster", args), timeout=540)
     if result.exit_code != 0 and not result.stdout:
         return result.to_json()
 
@@ -127,7 +176,7 @@ async def gobuster_scan(
 @mcp.tool()
 async def ffuf_fuzz(
     url: str,
-    wordlist: str = "/usr/share/wordlists/dirb/common.txt",
+    wordlist: str = "/usr/share/dirb/wordlists/common.txt",
     method: str = "GET",
     match_codes: str = "200,204,301,302,307,401,403",
     filters: str = "",
@@ -141,10 +190,25 @@ async def ffuf_fuzz(
         match_codes: Status codes to match (comma-separated)
         filters: Filter responses by size/words/lines (e.g. "fs=0" or "fw=42")
     """
+    import os as _os
+
     url = sanitize_input(url)
+    wordlist_candidates = [
+        wordlist,
+        "/usr/share/dirb/wordlists/common.txt",
+        "/usr/share/wordlists/dirb/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt",
+    ]
+    resolved_wl = wordlist
+    for candidate in wordlist_candidates:
+        if _os.path.isfile(candidate):
+            resolved_wl = candidate
+            break
+
     args = [
         "-u", url,
-        "-w", wordlist,
+        "-w", resolved_wl,
         "-X", sanitize_input(method).upper(),
         "-mc", sanitize_input(match_codes),
         "-json",

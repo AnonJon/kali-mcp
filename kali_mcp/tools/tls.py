@@ -19,11 +19,13 @@ async def testssl_check(target: str) -> str:
         target: Target host:port (e.g. "example.com:443" or "example.com")
     """
     target = sanitize_input(target)
-    args = ["--jsonfile", "-", "--quiet", "--color", "0", target]
+    if ":" not in target:
+        target = target + ":443"
+    args = ["--jsonfile=-", "--warnings", "off", "--color", "0", target]
 
-    result = await run_command(build_command("testssl", args), timeout=300)
+    result = await run_command(build_command("testssl.sh", args), timeout=300)
     if result.exit_code != 0 and not result.stdout:
-        result2 = await run_command(build_command("testssl.sh", args), timeout=300)
+        result2 = await run_command(build_command("testssl", args), timeout=300)
         if result2.stdout:
             result = result2
 
