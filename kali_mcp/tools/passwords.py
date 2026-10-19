@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from kali_mcp.executor import build_command, run_command, write_temp_file
+from kali_mcp.executor import build_command, run_command, sanitize_input, write_temp_file
 from kali_mcp.server import mcp
 
 
@@ -24,6 +24,9 @@ async def john_crack(
         wordlist: Path to wordlist (default: rockyou.txt)
         rules: John rules to apply (e.g. "best64", "dive")
     """
+    wordlist = sanitize_input(wordlist)
+    format = sanitize_input(format) if format else ""
+    rules = sanitize_input(rules) if rules else ""
     hash_file = write_temp_file(hash_file_content, suffix=".hashes")
 
     try:
@@ -45,10 +48,11 @@ async def john_crack(
             if ":" in line and not line.startswith("0 password") and "password hashes cracked" not in line:
                 cracked.append(line.strip())
 
+        run_out = "\n".join(part for part in (result.stdout, result.stderr) if part)
         return json.dumps({
             "cracked": cracked,
             "count": len(cracked),
-            "run_output": result.stdout[-2000:] if len(result.stdout) > 2000 else result.stdout,
+            "run_output": run_out[-2000:] if len(run_out) > 2000 else run_out,
         }, indent=2)
     finally:
         os.unlink(hash_file)

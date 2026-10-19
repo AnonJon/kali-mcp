@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 
 from kali_mcp.executor import build_command, run_command, sanitize_input
 from kali_mcp.server import mcp
+
+_GOBUSTER_STATUS_RE = re.compile(r"\(Status:\s*(\d+)\)")
+_GOBUSTER_SIZE_RE = re.compile(r"\[Size:\s*(\d+)\]")
+_GOBUSTER_REDIRECT_RE = re.compile(r"\[-->\s*([^\]]+)\]")
 
 
 @mcp.tool()
@@ -23,50 +28,55 @@ async def nikto_scan(
         tuning: Nikto tuning options (e.g. "123" for interesting files, misconfigs, info disclosure)
         ssl: Force SSL mode (auto-detected if target starts with https)
     """
-    import tempfile, os
+    import os
+    import shutil
+    import tempfile
 
     target = sanitize_input(target)
     has_scheme = target.startswith("http://") or target.startswith("https://")
     use_ssl = ssl or target.startswith("https")
 
-    outfile = tempfile.mktemp(suffix=".json")
-    args = ["-h", target, "-Format", "json", "-o", outfile, "-nointeractive", "-maxtime", "240"]
-
-    if not has_scheme:
-        if port > 0:
-            args += ["-p", str(port)]
-        elif use_ssl:
-            args += ["-p", "443"]
-        if use_ssl:
-            args += ["-ssl"]
-    elif port > 0:
-        args += ["-p", str(port)]
-
-    if tuning:
-        args += ["-Tuning", sanitize_input(tuning)]
-
-    result = await run_command(build_command("nikto", args), timeout=300)
-
-    output = ""
+    output_dir = tempfile.mkdtemp(prefix="nikto_")
+    outfile = os.path.join(output_dir, "result.json")
     try:
-        if os.path.exists(outfile):
-            with open(outfile) as f:
-                output = f.read()
-            os.unlink(outfile)
-    except OSError:
-        pass
+        args = ["-h", target, "-Format", "json", "-o", outfile, "-nointeractive", "-maxtime", "240"]
 
-    if output:
+        if not has_scheme:
+            if port > 0:
+                args += ["-p", str(port)]
+            elif use_ssl:
+                args += ["-p", "443"]
+            if use_ssl:
+                args += ["-ssl"]
+        elif port > 0:
+            args += ["-p", str(port)]
+
+        if tuning:
+            args += ["-Tuning", sanitize_input(tuning)]
+
+        result = await run_command(build_command("nikto", args), timeout=300)
+
+        output = ""
         try:
-            data = json.loads(output)
-            return json.dumps(data, indent=2)
-        except json.JSONDecodeError:
-            return json.dumps({"raw_output": output[:5000], "exit_code": result.exit_code}, indent=2)
+            if os.path.exists(outfile):
+                with open(outfile) as f:
+                    output = f.read()
+        except OSError:
+            pass
 
-    if result.stdout:
-        return json.dumps({"raw_output": result.stdout[:5000], "exit_code": result.exit_code}, indent=2)
+        if output:
+            try:
+                data = json.loads(output)
+                return json.dumps(data, indent=2)
+            except json.JSONDecodeError:
+                return json.dumps({"raw_output": output[:5000], "exit_code": result.exit_code}, indent=2)
 
-    return result.to_json()
+        if result.stdout:
+            return json.dumps({"raw_output": result.stdout[:5000], "exit_code": result.exit_code}, indent=2)
+
+        return result.to_json()
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 @mcp.tool()
@@ -130,7 +140,8 @@ async def gobuster_scan(
     import os
 
     target = sanitize_input(target)
-    mode = sanitize_input(mode)
+    wordlist = sanitize_input(wordlist)
+    mode = sanitize_input(mode).lower()
 
     wordlist_candidates = [
         wordlist,
@@ -148,7 +159,11 @@ async def gobuster_scan(
     else:
         return json.dumps({"error": "No wordlist found", "searched": wordlist_candidates}, indent=2)
 
-    args = [mode, "-u" if mode != "dns" else "-d", target, "-w", resolved_wordlist, "-t", str(min(threads, 10)), "-q", "--no-color", "--timeout", "10s"]
+    thread_str = str(max(1, min(50, threads)))
+    if mode == "dns":
+        args = ["dns", "--domain", target, "-w", resolved_wordlist, "-t", thread_str, "-q", "--no-color"]
+    else:
+        args = [mode, "-u", target, "-w", resolved_wordlist, "-t", thread_str, "-q", "--no-color", "--timeout", "10s"]
     if extensions and mode == "dir":
         args += ["-x", sanitize_input(extensions)]
 
@@ -161,14 +176,21 @@ async def gobuster_scan(
         line = line.strip()
         if not line:
             continue
-        parts = line.split()
-        if len(parts) >= 1:
-            entry: dict = {"path": parts[0]}
-            if len(parts) >= 2:
-                entry["status"] = parts[1].strip("()")
-            if len(parts) >= 3:
-                entry["size"] = parts[2]
-            entries.append(entry)
+        cleaned = line[len("Found:"):].strip() if line.startswith("Found:") else line
+        parts = cleaned.split()
+        if not parts:
+            continue
+        entry: dict = {"path": parts[0]}
+        status_match = _GOBUSTER_STATUS_RE.search(cleaned)
+        if status_match:
+            entry["status"] = status_match.group(1)
+        size_match = _GOBUSTER_SIZE_RE.search(cleaned)
+        if size_match:
+            entry["size"] = size_match.group(1)
+        redirect_match = _GOBUSTER_REDIRECT_RE.search(cleaned)
+        if redirect_match:
+            entry["redirect"] = redirect_match.group(1).strip()
+        entries.append(entry)
 
     return json.dumps({"target": target, "mode": mode, "results": entries, "count": len(entries)}, indent=2)
 
@@ -193,6 +215,7 @@ async def ffuf_fuzz(
     import os as _os
 
     url = sanitize_input(url)
+    wordlist = sanitize_input(wordlist)
     wordlist_candidates = [
         wordlist,
         "/usr/share/dirb/wordlists/common.txt",
@@ -232,6 +255,17 @@ async def ffuf_fuzz(
         data = json.loads(result.stdout)
         return json.dumps(data, indent=2)
     except json.JSONDecodeError:
+        items = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        if items:
+            return json.dumps({"results": items, "count": len(items)}, indent=2)
         return json.dumps({"raw_output": result.stdout}, indent=2)
 
 
@@ -248,7 +282,10 @@ async def httpx_probe(
         ports: Ports to check (e.g. "80,443,8080")
         paths: Paths to append (e.g. "/admin,/api")
     """
-    stdin_data = "\n".join(sanitize_input(t) for t in targets)
+    cleaned_targets = [sanitize_input(t) for t in targets if t and t.strip()]
+    if not cleaned_targets:
+        return json.dumps({"live_hosts": [], "count": 0}, indent=2)
+    stdin_data = "\n".join(cleaned_targets)
     args = ["-json", "-silent", "-no-color", "-title", "-tech-detect", "-status-code"]
     if ports:
         args += ["-ports", sanitize_input(ports)]

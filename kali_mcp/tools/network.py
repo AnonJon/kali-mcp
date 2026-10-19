@@ -58,12 +58,18 @@ async def curl_request(
             pass
         output = parts[0]
 
-    resp_headers = ""
+    header_blocks: list[str] = []
     body = output
-    if "\r\n\r\n" in output:
-        resp_headers, body = output.split("\r\n\r\n", 1)
-    elif "\n\n" in output:
-        resp_headers, body = output.split("\n\n", 1)
+    while body.lstrip().startswith("HTTP/"):
+        if "\r\n\r\n" in body:
+            hdr, body = body.split("\r\n\r\n", 1)
+            header_blocks.append(hdr)
+        elif "\n\n" in body:
+            hdr, body = body.split("\n\n", 1)
+            header_blocks.append(hdr)
+        else:
+            break
+    resp_headers = "\n\n".join(header_blocks)
 
     truncated = len(body) > 2000
     return json.dumps({
@@ -131,11 +137,12 @@ async def hping3_probe(
             args.append(flag_map[f])
 
     result = await run_command(build_command("hping3", args), timeout=30)
+    combined_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
 
     return json.dumps({
         "target": f"{target}:{port}",
         "flags": flags,
         "count": count,
-        "output": result.stdout,
+        "output": combined_output,
         "exit_code": result.exit_code,
     }, indent=2)

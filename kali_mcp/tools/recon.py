@@ -174,7 +174,7 @@ async def whois_lookup(domain: str) -> str:
         elif "name server:" in lower or "nserver:" in lower:
             ns = line.split(":", 1)[1].strip()
             data.setdefault("nameservers", []).append(ns)
-        elif "registrant" in lower and "org" in lower:
+        elif "registrant" in lower and "org" in lower and ":" in line:
             data["registrant_org"] = line.split(":", 1)[1].strip()
 
     return json.dumps(data, indent=2)
@@ -320,9 +320,12 @@ async def dnsx_resolve(
         record_type: DNS record type to query (A, AAAA, CNAME, MX, NS, TXT)
     """
     record_type = sanitize_input(record_type).upper()
-    stdin_data = "\n".join(sanitize_input(d) for d in domains)
-    type_flag = f"-{record_type.lower()}" if record_type != "A" else "-a"
-    args = [type_flag, "-json", "-silent"]
+    cleaned_domains = [sanitize_input(d) for d in domains if d and d.strip()]
+    if not cleaned_domains:
+        return json.dumps({"record_type": record_type, "results": []}, indent=2)
+    stdin_data = "\n".join(cleaned_domains)
+    type_flag = f"-{record_type.lower()}"
+    args = [type_flag, "-resp", "-json", "-silent"]
 
     result = await run_command(
         build_command("dnsx", args),

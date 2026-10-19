@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 
 from kali_mcp.executor import build_command, run_command, sanitize_input
@@ -21,22 +24,38 @@ async def testssl_check(target: str) -> str:
     target = sanitize_input(target)
     if ":" not in target:
         target = target + ":443"
-    args = ["--jsonfile=-", "--warnings", "off", "--color", "0", target]
 
-    result = await run_command(build_command("testssl.sh", args), timeout=300)
-    if result.exit_code != 0 and not result.stdout:
-        result2 = await run_command(build_command("testssl", args), timeout=300)
-        if result2.stdout:
-            result = result2
-
-    if not result.stdout:
-        return result.to_json()
-
+    output_dir = tempfile.mkdtemp(prefix="testssl_")
+    json_file = os.path.join(output_dir, "result.json")
     try:
-        data = json.loads(result.stdout)
-        return json.dumps(data, indent=2)
-    except json.JSONDecodeError:
-        return json.dumps({"raw_output": result.stdout[:5000]}, indent=2)
+        args = [f"--jsonfile={json_file}", "--warnings", "off", "--color", "0", target]
+
+        result = await run_command(build_command("testssl.sh", args), timeout=300)
+        if result.exit_code != 0 and not result.stdout and not os.path.exists(json_file):
+            result2 = await run_command(build_command("testssl", args), timeout=300)
+            if result2.stdout or os.path.exists(json_file):
+                result = result2
+
+        if os.path.exists(json_file):
+            with open(json_file) as f:
+                content = f.read()
+            if content.strip():
+                try:
+                    data = json.loads(content)
+                    return json.dumps(data, indent=2)
+                except json.JSONDecodeError:
+                    return json.dumps({"raw_output": content[:5000]}, indent=2)
+
+        if not result.stdout:
+            return result.to_json()
+
+        try:
+            data = json.loads(result.stdout)
+            return json.dumps(data, indent=2)
+        except json.JSONDecodeError:
+            return json.dumps({"raw_output": result.stdout[:5000]}, indent=2)
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
 
 
 @mcp.tool()
