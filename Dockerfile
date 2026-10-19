@@ -64,7 +64,7 @@ RUN AMASS_VERSION=v5.1.1 && \
     curl -sSL "https://github.com/owasp-amass/amass/releases/download/${AMASS_VERSION}/amass_linux_amd64.tar.gz" \
         -o /tmp/amass.tar.gz && \
     tar -xzf /tmp/amass.tar.gz -C /tmp && \
-    find /tmp -name amass -type f -executable -exec mv {} /usr/local/bin/ \; && \
+    find /tmp/amass_linux_amd64 -name amass -type f -exec mv {} /usr/local/bin/amass \; && \
     chmod +x /usr/local/bin/amass && \
     rm -rf /tmp/amass.tar.gz /tmp/amass_linux_amd64
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import xml.etree.ElementTree as ET
 
 from kali_mcp.executor import build_command, run_command, sanitize_input
@@ -249,36 +251,61 @@ async def subfinder_scan(domain: str) -> str:
 @mcp.tool()
 async def amass_enum(
     domain: str,
-    passive: bool = True,
+    active: bool = False,
+    timeout_minutes: int = 5,
 ) -> str:
     """Enumerate subdomains using OWASP Amass.
 
+    Amass v5 runs the enumeration into a local graph database (passive by
+    default) and the discovered names are then read back out, so this runs
+    `amass enum` followed by `amass subs -names` against a shared directory.
+
     Args:
         domain: Target domain to enumerate
-        passive: If True, only passive enumeration (no DNS resolution). Default True.
+        active: If True, enable active techniques (zone transfers, cert grabbing). Default passive.
+        timeout_minutes: Max minutes amass runs without progress before stopping (1-60, default 5)
     """
     domain = sanitize_input(domain)
-    args = ["enum", "-d", domain]
-    if passive:
-        args.append("-passive")
-    args += ["-json", "-"]
+    timeout_minutes = max(1, min(60, timeout_minutes))
+    workdir = tempfile.mkdtemp(prefix="amass_")
+    try:
+        enum_args = [
+            "enum",
+            "-d", domain,
+            "-dir", workdir,
+            "-timeout", str(timeout_minutes),
+            "-silent",
+        ]
+        if active:
+            enum_args.append("-active")
 
-    result = await run_command(build_command("amass", args), timeout=300)
-    if result.exit_code != 0 and not result.stdout:
-        return result.to_json()
+        enum_result = await run_command(
+            build_command("amass", enum_args),
+            timeout=timeout_minutes * 60 + 120,
+        )
 
-    findings: list[dict] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            findings.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+        subs_result = await run_command(
+            build_command("amass", ["subs", "-d", domain, "-dir", workdir, "-names", "-nocolor"]),
+            timeout=60,
+        )
 
-    subdomains = sorted({f.get("name", "") for f in findings if f.get("name")})
-    return json.dumps({"domain": domain, "subdomains": subdomains, "count": len(subdomains)}, indent=2)
+        subdomains = sorted({
+            line.strip()
+            for line in subs_result.stdout.splitlines()
+            if line.strip() and "." in line and " " not in line.strip()
+        })
+
+        if not subdomains and enum_result.exit_code != 0 and subs_result.exit_code != 0:
+            return json.dumps({
+                "domain": domain,
+                "error": "amass enumeration failed",
+                "enum_stderr": enum_result.stderr[-1000:],
+                "subs_stderr": subs_result.stderr[-1000:],
+            }, indent=2)
+
+        return json.dumps({"domain": domain, "subdomains": subdomains, "count": len(subdomains)}, indent=2)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 @mcp.tool()

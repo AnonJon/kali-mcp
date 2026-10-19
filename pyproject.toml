@@ -4,7 +4,9 @@ dynamic = ["version"]
 description = "Kali Linux MCP server for offensive security - 30 structured tools over stdio JSON-RPC"
 requires-python = ">=3.11"
 dependencies = [
-    "mcp[cli]>=1.0.0",
+    # Pin to the 1.x line: the code targets the v1 FastMCP API
+    # (mcp.server.fastmcp), which was renamed/removed in mcp 2.x.
+    "mcp[cli]>=1.0.0,<2",
 ]
 
 [project.scripts]
