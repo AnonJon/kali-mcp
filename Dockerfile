@@ -61,7 +61,7 @@ RUN export GOPATH=/root/go && \
 # ── 4. Amass ─────────────────────────────────────────────────────────────────
 # Pinned release; Amass ships linux builds as .tar.gz (not .zip).
 RUN AMASS_VERSION=v5.1.1 && \
-    curl -sSL "https://github.com/owasp-amass/amass/releases/download/${AMASS_VERSION}/amass_linux_amd64.tar.gz" \
+    curl -fsSL "https://github.com/owasp-amass/amass/releases/download/${AMASS_VERSION}/amass_linux_amd64.tar.gz" \
         -o /tmp/amass.tar.gz && \
     tar -xzf /tmp/amass.tar.gz -C /tmp && \
     find /tmp/amass_linux_amd64 -name amass -type f -exec mv {} /usr/local/bin/amass \; && \
