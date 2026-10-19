@@ -42,32 +42,31 @@ RUN set -eux; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── 2. ProjectDiscovery tools (nuclei, httpx, subfinder, dnsx) ───────────────
+# Versions are pinned for reproducible builds; bump deliberately.
 RUN export GOPATH=/root/go && \
-    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest && \
-    go install github.com/projectdiscovery/httpx/cmd/httpx@latest && \
-    go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest && \
-    go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest && \
+    go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.11.1 && \
+    go install github.com/projectdiscovery/httpx/cmd/httpx@v1.12.0 && \
+    go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@v2.17.0 && \
+    go install github.com/projectdiscovery/dnsx/cmd/dnsx@v1.3.1 && \
     mv /root/go/bin/* /usr/local/bin/ && \
     rm -rf /root/go && \
     nuclei -update-templates 2>/dev/null || true
 
 # ── 3. Dalfox (XSS scanner, Go-based) ───────────────────────────────────────
 RUN export GOPATH=/root/go && \
-    go install github.com/hahwul/dalfox/v2@latest && \
+    go install github.com/hahwul/dalfox/v2@v2.13.0 && \
     mv /root/go/bin/dalfox /usr/local/bin/ && \
     rm -rf /root/go
 
 # ── 4. Amass ─────────────────────────────────────────────────────────────────
-RUN AMASS_URL=$(curl -s "https://api.github.com/repos/owasp-amass/amass/releases/latest" \
-        | jq -r '.assets[] | select(.name | test("linux.*amd64\\.zip$")) | .browser_download_url' \
-        | head -1) && \
-    if [ -n "$AMASS_URL" ]; then \
-        curl -sSL "$AMASS_URL" -o /tmp/amass.zip && \
-        unzip -o /tmp/amass.zip -d /tmp/ 2>/dev/null || true && \
-        find /tmp -name amass -type f -executable -exec mv {} /usr/local/bin/ \; && \
-        chmod +x /usr/local/bin/amass 2>/dev/null || true; \
-    fi && \
-    rm -f /tmp/amass.zip
+# Pinned release; Amass ships linux builds as .tar.gz (not .zip).
+RUN AMASS_VERSION=v5.1.1 && \
+    curl -sSL "https://github.com/owasp-amass/amass/releases/download/${AMASS_VERSION}/amass_linux_amd64.tar.gz" \
+        -o /tmp/amass.tar.gz && \
+    tar -xzf /tmp/amass.tar.gz -C /tmp && \
+    find /tmp -name amass -type f -executable -exec mv {} /usr/local/bin/ \; && \
+    chmod +x /usr/local/bin/amass && \
+    rm -rf /tmp/amass.tar.gz /tmp/amass_linux_amd64
 
 # ── 5. Workspace and wordlists ───────────────────────────────────────────────
 RUN mkdir -p /opt/workspace/jobs && \
