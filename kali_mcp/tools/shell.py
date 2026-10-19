@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import uuid
 
@@ -11,6 +12,7 @@ from kali_mcp.executor import run_shell
 from kali_mcp.server import mcp
 
 JOBS_DIR = "/opt/workspace/jobs"
+_JOB_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 _background_jobs: dict[str, dict] = {}
 
@@ -68,10 +70,11 @@ async def background_command(
     job_id = str(uuid.uuid4())[:8]
     output_file = f"{JOBS_DIR}/{job_id}.out"
 
-    # Launch command in a subshell that self-terminates after timeout
+    # Launch command under timeout directly (no outer subshell wrapper) so $!
+    # is the timeout process itself, which manages the child process group.
     bg_command = (
         f"mkdir -p {JOBS_DIR} && "
-        f"( timeout {timeout} sh -c {_shell_quote(command)} ) > {output_file} 2>&1 & echo $!"
+        f"timeout {timeout} sh -c {_shell_quote(command)} > {output_file} 2>&1 & echo $!"
     )
 
     result = await run_shell(bg_command, timeout=5)
@@ -103,6 +106,10 @@ async def check_job(
         job_id: The job_id returned by background_command
         tail_lines: Number of output lines to return from the end (default 50)
     """
+    if not _JOB_ID_RE.match(job_id):
+        return json.dumps({"error": f"Invalid job_id: {job_id!r}"}, indent=2)
+
+    tail_lines = max(1, min(1000, tail_lines))
     output_file = f"{JOBS_DIR}/{job_id}.out"
     job = _background_jobs.get(job_id, {})
     pid_str = job.get("pid", "")
@@ -153,7 +160,14 @@ async def cancel_job(job_id: str) -> str:
         }, indent=2)
 
     try:
-        os.kill(pid, signal.SIGTERM)
+        try:
+            pgid = os.getpgid(pid)
+            if pgid == pid:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except OSError:
+            os.kill(pid, signal.SIGTERM)
         return json.dumps({
             "job_id": job_id,
             "status": "cancelled",

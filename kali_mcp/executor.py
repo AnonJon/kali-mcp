@@ -7,12 +7,13 @@ import json
 import os
 import re
 import shlex
+import signal
 import tempfile
 from dataclasses import dataclass
 from typing import Sequence
 
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?\x07|\r")
-DANGEROUS_PATTERNS = re.compile(r"[;&|`$]|\$\(|>\s*/")
+DANGEROUS_PATTERNS = re.compile(r"[;|`$]|&&|\$\(|>\s*/")
 
 DEFAULT_TIMEOUT = 300
 MAX_OUTPUT_SIZE = 100_000  # chars; truncate stdout/stderr beyond this
@@ -36,7 +37,7 @@ class ExecResult:
             d["stderr"] = self.stderr
         if self.timed_out:
             d["timed_out"] = True
-            d["message"] = f"Command timed out after execution"
+            d["message"] = "Command timed out"
         return d
 
     def to_json(self) -> str:
@@ -152,6 +153,7 @@ async def run_shell(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
+            start_new_session=True,
         )
 
         try:
@@ -160,7 +162,10 @@ async def run_shell(
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                proc.kill()
             await proc.wait()
             return ExecResult(
                 stdout="",
